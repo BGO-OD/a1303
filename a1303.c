@@ -471,8 +471,11 @@ static int a1303_ioctl(struct inode *inode,struct file *file,unsigned int cmd, u
 static void a1303_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
 	#define IRQ_HANDLED
-#else
+#elseif LINUX_VERSION_CODE < VERSION(2,6,27)
 static irqreturn_t a1303_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+{
+#else
+static irqreturn_t a1303_interrupt(int irq, void *dev_id)
 {
 #endif
 	struct a1303_state *s = (struct a1303_state *)dev_id;
@@ -537,7 +540,11 @@ void initialize_board(struct pci_dev *pcidev, int index)
 #endif
 	s->irq = pcidev->irq;
 	/* request irq */
+#if LINUX_VERSION_CODE >= VERSION(2,6,27) 
+	if (request_irq(s->irq, a1303_interrupt, IRQF_SHARED, "a1303", s)) {
+#else
 	if (request_irq(s->irq, a1303_interrupt, SA_SHIRQ, "a1303", s)) {
+#endif
 		printk(KERN_ERR "A1303: irq %u in use\n", s->irq);
 		goto err_irq;
 	}
