@@ -1,0 +1,1 @@
+ATTR{vendor}=="0x10b5" , ATTR{device}=="0x9030" , PROGRAM:="/usr/local/bin/mka1303devices", OPTIONS="last_rule"

@@ -17,23 +17,11 @@
 
 static char Version[] = "1.2 Feb. 2007";
 
-#include <linux/autoconf.h>
 #include <linux/version.h>
-// Rev 1.1
-#if LINUX_VERSION_CODE < VERSION(2,5,0)
-	#define MODULE
-
-	#ifdef CONFIG_MODVERSIONS
-        	#define MODVERSIONS
-        	#include <linux/modversions.h>
-	#endif
-#else
-	#include <linux/interrupt.h>
-	#include <linux/pagemap.h>
-
-#endif
-
 #include <linux/module.h>
+#include <linux/interrupt.h>
+#include <linux/pagemap.h>
+
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/proc_fs.h>
@@ -44,12 +32,14 @@ static char Version[] = "1.2 Feb. 2007";
 #include <linux/init.h>
 #include <linux/delay.h>                 // udelay
 
-#if LINUX_VERSION_CODE < VERSION(2,3,0) 
-typedef struct wait_queue *wait_queue_head_t;
-#define init_waitqueue_head(head) *(head) = NULL
-#endif
 
 #include "../include/a1303.h"
+
+
+MODULE_DESCRIPTION("CAEN A1303 PCI CaeNet Board Driver");
+MODULE_AUTHOR("Stefano Coluccini, s.coluccini@caen.it");
+MODULE_LICENSE("GPL");
+
 
 #define MAX_MINOR 	    8
 #define PFX "a1303: "
@@ -62,7 +52,7 @@ static int a1303_release(struct inode *, struct file *);
 static ssize_t a1303_read(struct file *,char *, size_t, loff_t *);
 static ssize_t a1303_write(struct file *,const char *, size_t, loff_t *);
 static unsigned int a1303_poll(struct file *, poll_table *);
-static int a1303_ioctl(struct inode *, struct file *, unsigned int, 
+static long a1303_ioctl(struct file *, unsigned int, 
 		       unsigned long);
 static int a1303_procinfo(char *, char **, off_t, int, int *,void *);
 
@@ -102,16 +92,13 @@ static struct proc_dir_entry *a1303_procdir;
 
 static struct file_operations a1303_fops = 
 {
-#if LINUX_VERSION_CODE >= VERSION(2,5,0)
-	owner:    THIS_MODULE, 
-#endif
-
-	read:     a1303_read,
-	write:    a1303_write,
-	poll:     a1303_poll,  
-	ioctl:    a1303_ioctl,
-	open:     a1303_open,
-	release:  a1303_release 
+	.owner=    THIS_MODULE, 
+	.open=     a1303_open,
+	.release=  a1303_release,
+	.read=     a1303_read,
+	.write=    a1303_write,
+	.poll=     a1303_poll,  
+	.unlocked_ioctl=    a1303_ioctl
 };
 
 //-----------------------------------------------------------------------------
@@ -312,19 +299,6 @@ static ssize_t a1303_read(struct file *file, char *buf, size_t count, loff_t *pp
 	int ret;
 	s->reads++;
 
-#if LINUX_VERSION_CODE < VERSION(2,6,0)
-	while( !s->rx_ready ) {
-		interruptible_sleep_on_timeout(&s->wait_list, s->timeout);
-		if( signal_pending(current) ) {
-			ret = -EINTR;
-			goto err_read;
-		}
-		if( !s->rx_ready ) {
-			ret = -ETIMEDOUT;
-			goto err_read;
-		}
-	}
-#else
 	//printk(KERN_INFO PFX "A1303 R-0\n");
 	ret = wait_event_interruptible_timeout(s->wait_list, (s->rx_ready), s->timeout);
 	if( ret == 0 ) {
@@ -335,15 +309,9 @@ static ssize_t a1303_read(struct file *file, char *buf, size_t count, loff_t *pp
 	       goto err_read;
         } else ret = 0;
 	//printk(KERN_INFO PFX "A1303 R-1\n");
-#endif
 	s->rx_ready = 0;
-#if LINUX_VERSION_CODE < VERSION(2,6,14)
-	if( (ret = verify_area(VERIFY_WRITE, (void *)buf, s->buff_count)) )
-		goto err_read;
-#else
 	if( (ret = access_ok(VERIFY_WRITE, (void *)buf, s->buff_count)) != 1 )
 		goto err_read;
-#endif
 	if( copy_to_user(buf, &s->buff, s->buff_count) > 0) {
 		ret = -EFAULT;
 		goto err_read;
@@ -374,13 +342,8 @@ static ssize_t a1303_write(struct file *file, const char *buf, size_t count, lof
 	unsigned long flags;
 	
 	s->writes++;
-#if LINUX_VERSION_CODE < VERSION(2,6,14)
-	if( (ret = verify_area(VERIFY_READ, buf, count)) )
-  	return ret;
-#else
 	if( (ret = access_ok(VERIFY_READ, buf, count)) != 1 ) 
   		return ret;
-#endif
 	
 	
 
@@ -433,7 +396,7 @@ err_write:
 // Remarks    : 
 // History    : 
 //-----------------------------------------------------------------------------
-static int a1303_ioctl(struct inode *inode,struct file *file,unsigned int cmd, unsigned long arg)
+static long a1303_ioctl(struct file *file,unsigned int cmd, unsigned long arg)
 {
 	// unsigned int minor = MINOR(inode->i_rdev);
 	struct a1303_state *s = (struct a1303_state *)file->private_data;
@@ -467,17 +430,8 @@ static int a1303_ioctl(struct inode *inode,struct file *file,unsigned int cmd, u
 // History    : 
 //-----------------------------------------------------------------------------
 // Rev 1.1
-#if LINUX_VERSION_CODE < VERSION(2,5,0)
-static void a1303_interrupt(int irq, void *dev_id, struct pt_regs *regs)
-{
-	#define IRQ_HANDLED
-#elseif LINUX_VERSION_CODE < VERSION(2,6,27)
-static irqreturn_t a1303_interrupt(int irq, void *dev_id, struct pt_regs *regs)
-{
-#else
 static irqreturn_t a1303_interrupt(int irq, void *dev_id)
 {
-#endif
 	struct a1303_state *s = (struct a1303_state *)dev_id;
 	unsigned char a1303_stat = 0;
 
@@ -507,14 +461,12 @@ static irqreturn_t a1303_interrupt(int irq, void *dev_id)
 // Remarks    : 
 // History    : 
 //-----------------------------------------------------------------------------
-void initialize_board(struct pci_dev *pcidev, int index)
+static void initialize_board(struct pci_dev *pcidev, int index)
 {
 	struct a1303_state *s;
 	
-#if LINUX_VERSION_CODE >= VERSION(2,3,0) 
 	if (pci_enable_device(pcidev))
 		return;
-#endif
 	if (pcidev->irq == 0)
 		return;
 	s = kmalloc(sizeof(*s), GFP_KERNEL);
@@ -526,7 +478,6 @@ void initialize_board(struct pci_dev *pcidev, int index)
 	memset(s, 0, sizeof(struct a1303_state));
 	init_waitqueue_head(&s->wait_list);
 	spin_lock_init(&s->lock);
-#if LINUX_VERSION_CODE >= VERSION(2,3,0) 
 	s->phys = pci_resource_start(pcidev, 2);
 	if (s->phys == 0)
 		return;
@@ -535,16 +486,9 @@ void initialize_board(struct pci_dev *pcidev, int index)
 		       s->phys, s->phys+16-1);
 		goto err_region5;
 	}
-#else
-	s->phys = pcidev->base_address[2] & PCI_BASE_ADDRESS_MEM_MASK;
-#endif
 	s->irq = pcidev->irq;
 	/* request irq */
-#if LINUX_VERSION_CODE >= VERSION(2,6,27) 
 	if (request_irq(s->irq, a1303_interrupt, IRQF_SHARED, "a1303", s)) {
-#else
-	if (request_irq(s->irq, a1303_interrupt, SA_SHIRQ, "a1303", s)) {
-#endif
 		printk(KERN_ERR "A1303: irq %u in use\n", s->irq);
 		goto err_irq;
 	}
@@ -565,9 +509,7 @@ void initialize_board(struct pci_dev *pcidev, int index)
 
 err_irq:
 	iounmap(s->baseaddr);
-#if LINUX_VERSION_CODE >= VERSION(2,3,0) 
 	release_mem_region(s->phys, 16);
-#endif
 
 err_region5:
 	kfree(s);
@@ -575,8 +517,6 @@ err_region5:
 	return;
 }
 
-MODULE_AUTHOR("Stefano Coluccini, s.coluccini@caen.it");
-MODULE_DESCRIPTION("CAEN A1303 PCI CaeNet Board Driver");
 
 //-----------------------------------------------------------------------------
 // Function   : init_a1303
@@ -586,11 +526,7 @@ MODULE_DESCRIPTION("CAEN A1303 PCI CaeNet Board Driver");
 // Remarks    : 
 // History    : 
 //-----------------------------------------------------------------------------
-#if LINUX_VERSION_CODE < VERSION(2,3,0) 
-static int init_module(void)
-#else
 static int __init init_a1303(void)
-#endif
 {
 	struct pci_dev *pcidev = NULL;
 	int index = 0;
@@ -603,12 +539,6 @@ static int __init init_a1303(void)
   is empty and all functions for searching for
   devices just return NULL. '
 */
-#if LINUX_VERSION_CODE < VERSION(2,5,0)
-	#ifdef CONFIG_PCI
-        	if (!pci_present())   /* No PCI bus in this machine! */
-                	return -ENODEV;
-	#endif
-#endif
 	
 	printk(KERN_INFO "CAEN A1303 Caenet controller driver %s\n", Version);
 	printk(KERN_INFO "  Copyright 1999-2002, CAEN SpA\n");
@@ -620,35 +550,6 @@ static int __init init_a1303(void)
 		return -ENODEV;
 	}
 
-#if LINUX_VERSION_CODE < VERSION(2,3,0) 
-	while (index < MAX_MINOR && (
-	       (pcidev = pci_find_device(PCI_VENDOR_ID_PLX, 
-					 PCI_DEVICE_ID_PLX_9030,
-					 pcidev)))) { 
-		unsigned short ss_id;
-
-		pci_read_config_word(pcidev, PCI_SUBSYSTEM_ID, &ss_id);
-		
-		if( ss_id == PCI_SUBDEVICE_ID_CAEN_A1303 ) {
-			initialize_board(pcidev, index);
-			index++;
-		}	
-	}
-	printk(KERN_INFO "  CAEN A1303: %d device(s) found.\n", index);
-
-	return 0;
-#endif
-#if LINUX_VERSION_CODE < VERSION(2,6,10) 
-	while (index < MAX_MINOR && (
-	       (pcidev = pci_find_subsys(PCI_VENDOR_ID_PLX, 
-					 PCI_DEVICE_ID_PLX_9030,
-					 PCI_VENDOR_ID_PLX, 
-					 PCI_SUBDEVICE_ID_CAEN_A1303, 
-					 pcidev)))) { 
-		initialize_board(pcidev, index);
-		index++;
-	}
-#else
 	while (index < MAX_MINOR && (
 	       (pcidev = pci_get_subsys(PCI_VENDOR_ID_PLX, 
 					 PCI_DEVICE_ID_PLX_9030,
@@ -658,7 +559,6 @@ static int __init init_a1303(void)
 		initialize_board(pcidev, index);
 		index++;
 	}
-#endif
 	printk(KERN_INFO "  CAEN A1303: %d device(s) found.\n", index);
 
 	return 0;
@@ -672,11 +572,7 @@ static int __init init_a1303(void)
 // Remarks    : 
 // History    : 
 //-----------------------------------------------------------------------------
-#if LINUX_VERSION_CODE < VERSION(2,3,0) 
-static void cleanup_module(void)
-#else
 static void __exit cleanup_a1303(void)
-#endif
 {
 	struct a1303_state *s;
 
@@ -685,9 +581,7 @@ static void __exit cleanup_a1303(void)
 
 		free_irq(s->irq, s);
 
-#if LINUX_VERSION_CODE >= VERSION(2,3,0) 
 		release_mem_region(s->phys, 16);
-#endif
 		kfree(s);
 	}
 	unregister_proc();
@@ -695,9 +589,6 @@ static void __exit cleanup_a1303(void)
 	printk(KERN_INFO "CAEN A1303: unloading.\n");
 }
 
-#if LINUX_VERSION_CODE >= VERSION(2,3,0) 
 module_init(init_a1303);
 module_exit(cleanup_a1303);
-#endif
 
-MODULE_LICENSE("GPL");
