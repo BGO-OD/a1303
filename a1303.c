@@ -31,6 +31,7 @@ static char Version[] = "1.2 Feb. 2007";
 #include <asm/uaccess.h>
 #include <linux/init.h>
 #include <linux/delay.h>                 // udelay
+#include <linux/sched.h>
 
 
 #include "../include/a1303.h"
