@@ -32,6 +32,7 @@ static char Version[] = "1.2 Feb. 2007";
 #include <linux/init.h>
 #include <linux/delay.h>                 // udelay
 #include <linux/sched.h>
+#include <linux/seq_file.h>
 
 
 #include "../include/a1303.h"
@@ -55,8 +56,8 @@ static ssize_t a1303_write(struct file *,const char *, size_t, loff_t *);
 static unsigned int a1303_poll(struct file *, poll_table *);
 static long a1303_ioctl(struct file *, unsigned int, 
 		       unsigned long);
-static int a1303_procinfo(char *, char **, off_t, int, int *,void *);
-
+static int a1303_procinfo(struct seq_file *seq, void *v);
+static int a1303_procinfo_open(struct inode *inode, struct file *file);
 //----------------------------------------------------------------------------
 // Types
 //----------------------------------------------------------------------------
@@ -100,6 +101,14 @@ static struct file_operations a1303_fops =
 	.write=    a1303_write,
 	.poll=     a1303_poll,  
 	.unlocked_ioctl=    a1303_ioctl
+};
+
+static struct file_operations a1303_procinfo_fops = 
+{
+	.open = a1303_procinfo_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
 };
 
 //-----------------------------------------------------------------------------
@@ -151,37 +160,38 @@ static int a1303_led(struct a1303_state* s)
 // Remarks    : 
 // History    : 
 //-----------------------------------------------------------------------------
-static int a1303_procinfo(char *buf, char **start, off_t fpos, int lenght, 
-			  int *eof, void *data)
+static int a1303_procinfo(struct seq_file *seq, void *v)
 {
-	char *p;
 	struct a1303_state* s = devs;
 	int i = 0;
 
-	p = buf;
-	p += sprintf(p,"CAEN A1303 driver %s\n\n",Version);
+	seq_printf(seq,"CAEN A1303 driver %s\n\n",Version);
 
 	while( s ) {
-		p += sprintf(p,"  CAEN A1303 CaeNet Board found.");
-		p += sprintf(p,"  Physical address = %08X\n",(int)s->phys);
-		p += sprintf(p,"  Virtual address = %08X\n",(int)s->baseaddr);
-		p += sprintf(p,"  IRQ line = %d\n",(int)s->irq);
-		p += sprintf(p,"  Minor number = %d\n",(int)s->minor);
-		p += sprintf(p,"  Reads = %i  Writes = %i  Ioctls = %i\n",
+		seq_printf(seq,"  CAEN A1303 CaeNet Board found.");
+		seq_printf(seq,"  Physical address = %08X\n",(int)s->phys);
+		seq_printf(seq,"  Virtual address = %08X\n",(int)s->baseaddr);
+		seq_printf(seq,"  IRQ line = %d\n",(int)s->irq);
+		seq_printf(seq,"  Minor number = %d\n",(int)s->minor);
+		seq_printf(seq,"  Reads = %i  Writes = %i  Ioctls = %i\n",
 			     s->reads, s->writes, s->ioctls);
-		p += sprintf(p,"  Board status = %08X\n", 
+		seq_printf(seq,"  Board status = %08X\n", 
 			     readb(s->baseaddr + A1303_REG));
 
-		p += sprintf(p,"\n");  
-		
+		seq_printf(seq,"\n");  
+
 		s = s->next;
 		i++;
 	}
 
-	p += sprintf(p,"%d CAEN A1303 board(s) found.\n", i);  
+	seq_printf(seq,"%d CAEN A1303 board(s) found.\n", i);  
 
-	*eof = 1;
-	return p - buf;
+	return 0;
+}
+
+static int a1303_procinfo_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, a1303_procinfo, NULL);
 }
 
 //-----------------------------------------------------------------------------
@@ -194,8 +204,7 @@ static int a1303_procinfo(char *buf, char **start, off_t fpos, int lenght,
 //-----------------------------------------------------------------------------
 static void register_proc(void)
 {
-	a1303_procdir = create_proc_entry("a1303", S_IFREG | S_IRUGO, 0);
-	a1303_procdir->read_proc = a1303_procinfo;
+	a1303_procdir = proc_create("a1303", S_IFREG | S_IRUGO, NULL, &a1303_procinfo_fops);
 }
 
 //-----------------------------------------------------------------------------
