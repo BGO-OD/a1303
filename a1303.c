@@ -33,7 +33,8 @@ static char Version[] = "1.2 Feb. 2007";
 #include <linux/delay.h>                 // udelay
 #include <linux/sched.h>
 #include <linux/seq_file.h>
-
+#include <linux/device.h>
+#include <linux/cdev.h>
 
 #include "../include/a1303.h"
 
@@ -58,6 +59,7 @@ static long a1303_ioctl(struct file *, unsigned int,
 		       unsigned long);
 static int a1303_procinfo(struct seq_file *seq, void *v);
 static int a1303_procinfo_open(struct inode *inode, struct file *file);
+static void cleanup_a1303(void);
 //----------------------------------------------------------------------------
 // Types
 //----------------------------------------------------------------------------
@@ -77,6 +79,8 @@ struct a1303_state {
 	unsigned int 		reads;
 	unsigned int 		writes;
 	unsigned int 		ioctls;
+
+	struct cdev cdev;
 
 	/* we keep a1303 cards in a linked list */
 	struct 			a1303_state *next;
@@ -110,6 +114,8 @@ static struct file_operations a1303_procinfo_fops =
 	.llseek = seq_lseek,
 	.release = single_release,
 };
+
+static struct class *a1303_class = NULL;
 
 //-----------------------------------------------------------------------------
 // Function   : a1303_reset
@@ -474,7 +480,10 @@ static irqreturn_t a1303_interrupt(int irq, void *dev_id)
 static void initialize_board(struct pci_dev *pcidev, int index)
 {
 	struct a1303_state *s;
-	
+	int err = 0;
+	dev_t devno = MKDEV(a1303_major, index);
+	struct device *device = NULL;
+
 	if (pci_enable_device(pcidev))
 		return;
 	if (pcidev->irq == 0)
@@ -509,8 +518,29 @@ static void initialize_board(struct pci_dev *pcidev, int index)
 	printk("  CAEN A1303 Loaded.\n"); 
 
 	register_proc();
-	
+
 	s->minor = index;
+
+	cdev_init(&s->cdev, &a1303_fops);
+
+	err = cdev_add(&s->cdev, devno, 1);
+	if (err) {
+		printk(KERN_WARNING PFX "Error %d while trying to add %s_%d",
+			err, "a1303", index);
+		goto err_irq;
+	}
+
+	device = device_create(a1303_class, NULL, /* no parent device */ 
+		devno, NULL, /* no additional data */
+		"a1303_%d", index);
+
+	if (IS_ERR(device)) {
+		err = PTR_ERR(device);
+		printk(KERN_WARNING PFX "Error %d while trying to create %s%d",
+			err, "a1303", index);
+		cdev_del(&s->cdev);
+		goto err_irq;
+	}
 
 	/* queue it for later freeing */
 	s->next = devs;
@@ -527,7 +557,6 @@ err_region5:
 	return;
 }
 
-
 //-----------------------------------------------------------------------------
 // Function   : init_a1303
 // Inputs     : void
@@ -538,8 +567,10 @@ err_region5:
 //-----------------------------------------------------------------------------
 static int __init init_a1303(void)
 {
+	dev_t dev = 0;
 	struct pci_dev *pcidev = NULL;
 	int index = 0;
+	int err = 0;
 /*
   from 2.6 on pci_present is obsolete:
   From http://www.linux-m32r.org/lxr/http/source/Documentation/pci.txt?v=2.6.10 ...
@@ -549,29 +580,40 @@ static int __init init_a1303(void)
   is empty and all functions for searching for
   devices just return NULL. '
 */
-	
+
 	printk(KERN_INFO "CAEN A1303 Caenet controller driver %s\n", Version);
 	printk(KERN_INFO "  Copyright 1999-2002, CAEN SpA\n");
 
-	/* register device */
-	a1303_major = register_chrdev(0, "a1303", &a1303_fops);
-	if ( a1303_major < 0 ) {
-		printk("  Error getting Major Number for Drivers\n");
-		return -ENODEV;
+	err = alloc_chrdev_region(&dev, 0, MAX_MINOR, "a1303");
+	if (err < 0) {
+		printk(KERN_WARNING PFX "alloc_chrdev_region() failed\n");
+		return err;
+	}
+	a1303_major = MAJOR(dev);
+
+	/* Create device class (before allocation of the array of devices) */
+	a1303_class = class_create(THIS_MODULE, "a1303");
+	if (IS_ERR(a1303_class)) {
+		err = PTR_ERR(a1303_class);
+		goto fail;
 	}
 
+	/* Construct devices */
 	while (index < MAX_MINOR && (
-	       (pcidev = pci_get_subsys(PCI_VENDOR_ID_PLX, 
+		(pcidev = pci_get_subsys(PCI_VENDOR_ID_PLX,
 					 PCI_DEVICE_ID_PLX_9030,
-					 PCI_VENDOR_ID_PLX, 
-					 PCI_SUBDEVICE_ID_CAEN_A1303, 
-					 pcidev)))) { 
+					 PCI_VENDOR_ID_PLX,
+					 PCI_SUBDEVICE_ID_CAEN_A1303,
+					 pcidev)))) {
 		initialize_board(pcidev, index);
 		index++;
 	}
 	printk(KERN_INFO "  CAEN A1303: %d device(s) found.\n", index);
+	return 0; /* success */
 
-	return 0;
+fail:
+	cleanup_a1303();
+	return err;
 }
 
 //-----------------------------------------------------------------------------
@@ -582,7 +624,7 @@ static int __init init_a1303(void)
 // Remarks    : 
 // History    : 
 //-----------------------------------------------------------------------------
-static void __exit cleanup_a1303(void)
+static void cleanup_a1303(void)
 {
 	struct a1303_state *s;
 
@@ -594,11 +636,14 @@ static void __exit cleanup_a1303(void)
 		release_mem_region(s->phys, 16);
 		kfree(s);
 	}
+
+	if (a1303_class)
+		class_destroy(a1303_class);
+
 	unregister_proc();
-	unregister_chrdev(a1303_major, "a1303");
+	unregister_chrdev_region(MKDEV(a1303_major, 0), MAX_MINOR);
 	printk(KERN_INFO "CAEN A1303: unloading.\n");
 }
 
 module_init(init_a1303);
 module_exit(cleanup_a1303);
-
