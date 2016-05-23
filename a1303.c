@@ -36,7 +36,7 @@ static char Version[] = "1.2 Feb. 2007";
 #include <linux/device.h>
 #include <linux/cdev.h>
 
-#include "../include/a1303.h"
+#include "a1303.h"
 
 
 MODULE_DESCRIPTION("CAEN A1303 PCI CaeNet Board Driver");
